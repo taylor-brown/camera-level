@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#000000">
+    <title>Camera Level</title>
+    <style>
+        :root {
+            --plumb: #ff3b30;
+            --level: #34c759;
+            --target: #ffcc00;
+            --ui-bg: rgba(0, 0, 0, 0.55);
+            --ui-fg: #ffffff;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        html, body {
+            margin: 0;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+            color: var(--ui-fg);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            -webkit-user-select: none;
+            user-select: none;
+            touch-action: manipulation;
+        }
+        #video {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            background: #000;
+        }
+        #overlay {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+        }
+        /* Fixed centre line: shows where the phone itself thinks "vertical" is. */
+        #ref {
+            position: absolute;
+            left: 50%;
+            top: 0;
+            bottom: 0;
+            width: 0;
+            border-left: 1px dashed rgba(255, 255, 255, 0.5);
+        }
+        /* Plumb line: rotated so it always points along gravity. */
+        #plumb {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 3px;
+            height: 300vmax;
+            margin-left: -1.5px;
+            margin-top: -150vmax;
+            background: var(--plumb);
+            box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+            transform-origin: 50% 50%;
+            will-change: transform;
+        }
+        #plumb.level { background: var(--level); }
+        /* Target line: set at a chosen angle from vertical, for measuring. */
+        #target {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 3px;
+            height: 300vmax;
+            margin-left: -1.5px;
+            margin-top: -150vmax;
+            background: var(--target);
+            box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+            transform-origin: 50% 50%;
+            will-change: transform;
+        }
+        #target.hit {
+            width: 5px;
+            margin-left: -2.5px;
+            background: var(--level);
+            box-shadow: 0 0 12px 3px var(--level);
+        }
+        #readout.hit { color: var(--level); }
+        #center {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 18px;
+            height: 18px;
+            margin: -9px 0 0 -9px;
+            border: 2px solid #fff;
+            border-radius: 50%;
+        }
+        #readout {
+            position: fixed;
+            top: max(12px, env(safe-area-inset-top));
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 6px 14px;
+            border-radius: 999px;
+            background: var(--ui-bg);
+            font-size: 22px;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        #readout.level { color: var(--level); }
+        #warn {
+            position: fixed;
+            top: calc(max(12px, env(safe-area-inset-top)) + 46px);
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 4px 12px;
+            border-radius: 8px;
+            background: var(--ui-bg);
+            font-size: 14px;
+            white-space: nowrap;
+        }
+        #bar {
+            position: fixed;
+            bottom: max(12px, env(safe-area-inset-bottom));
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            width: max-content;
+            max-width: calc(100vw - 24px);
+        }
+        #targetbox {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 0 4px 0 12px;
+            border-radius: 999px;
+            background: var(--ui-bg);
+            border: 1px solid var(--target);
+        }
+        #targetbox input {
+            width: 4.5em;
+            font: inherit;
+            font-size: 16px;
+            color: var(--ui-fg);
+            background: transparent;
+            border: 0;
+            outline: none;
+            text-align: right;
+        }
+        #targetbox button { padding: 6px 10px; border: 0; background: transparent; }
+        #angleToggle.on { border-color: var(--target); color: var(--target); }
+        button {
+            font: inherit;
+            font-size: 15px;
+            color: var(--ui-fg);
+            background: var(--ui-bg);
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            border-radius: 999px;
+            padding: 10px 16px;
+            cursor: pointer;
+        }
+        button:active { background: rgba(255, 255, 255, 0.25); }
+        #start {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 18px;
+            padding: 24px;
+            text-align: center;
+            background: #111;
+        }
+        #start h1 { margin: 0; font-size: 26px; }
+        #start p { margin: 0; max-width: 28em; color: #bbb; line-height: 1.4; }
+        #start button { font-size: 18px; padding: 14px 28px; background: #0a84ff; border: 0; }
+        #error { color: #ff6b6b; }
+        #demoBox {
+            position: fixed;
+            left: 50%;
+            transform: translateX(-50%);
+            bottom: calc(max(12px, env(safe-area-inset-bottom)) + 62px);
+            width: min(80vw, 420px);
+            padding: 8px 14px;
+            border-radius: 14px;
+            background: var(--ui-bg);
+            text-align: center;
+            font-size: 13px;
+        }
+        #demoBox input { width: 100%; margin: 6px 0 0; }
+        [hidden] { display: none !important; }
+    </style>
+</head>
+<body>
+<video id="video" autoplay playsinline muted></video>
+
+<div id="overlay">
+    <div id="ref"></div>
+    <div id="plumb"></div>
+    <div id="target" hidden></div>
+    <div id="center"></div>
+</div>
+
+<div id="readout">--.-°</div>
+<div id="warn" hidden>Hold the phone upright</div>
+
+<div id="demoBox" hidden>
+    <span id="note">No tilt sensor found. Drag to simulate tilting the phone.</span>
+    <input id="demo" type="range" min="-90" max="90" step="0.5" value="0" aria-label="Simulated tilt in degrees">
+</div>
+
+<div id="bar">
+    <button id="zero" type="button">Zero</button>
+    <button id="reset" type="button" hidden>Reset</button>
+    <button id="angleToggle" type="button">Angle</button>
+    <span id="targetbox" hidden>
+        <input id="targetInput" type="number" inputmode="decimal" step="0.1" min="-180" max="180" value="45" aria-label="Target angle in degrees">°
+        <button id="targetSign" type="button" aria-label="Flip direction">±</button>
+    </span>
+    <button id="snap" type="button">Photo</button>
+    <button id="full" type="button">Fullscreen</button>
+</div>
+
+<div id="start">
+    <h1>Camera Level</h1>
+    <p>Turn your phone sideways and point the camera at what you want to straighten.
+        The red line always hangs straight down; it turns green when the phone is level.</p>
+    <button id="go" type="button">Start</button>
+    <p id="error" hidden></p>
+</div>
+
+<script>
+(function () {
+    "use strict";
+
+    var LEVEL_TOLERANCE = 0.5;  // degrees within which the line turns green
+    var SMOOTHING = 0.15;       // low-pass factor for the gravity vector (0..1)
+    var MIN_TILT = 0.35;        // below this the phone is too flat to read
+
+    var video = document.getElementById("video");
+    var plumb = document.getElementById("plumb");
+    var readout = document.getElementById("readout");
+    var warn = document.getElementById("warn");
+    var startScreen = document.getElementById("start");
+    var errorText = document.getElementById("error");
+    var resetButton = document.getElementById("reset");
+
+    // Smoothed "up" vector projected onto the screen plane (x right, y up).
+    var sx = 0;
+    var sy = 1;
+    var haveReading = false;
+    var offset = 0;  // calibration, degrees
+    var angle = 0;   // last displayed angle, degrees
+
+    // Optional second line at a chosen angle from vertical (clockwise positive).
+    var target = document.getElementById("target");
+    var targetBox = document.getElementById("targetbox");
+    var targetInput = document.getElementById("targetInput");
+    var angleToggle = document.getElementById("angleToggle");
+    var targetOn = false;
+    var targetAngle = 45;
+    var wasHit = false;
+
+    try {
+        offset = parseFloat(localStorage.getItem("level-offset")) || 0;
+        var savedTarget = parseFloat(localStorage.getItem("level-target"));
+        if (!isNaN(savedTarget)) {
+            targetAngle = savedTarget;
+        }
+        targetOn = localStorage.getItem("level-target-on") === "1";
+    } catch (ignore) {}
+    resetButton.hidden = offset === 0;
+
+    function screenAngle() {
+        if (screen.orientation && typeof screen.orientation.angle === "number") {
+            return screen.orientation.angle;
+        }
+        return typeof window.orientation === "number" ? window.orientation : 0;
+    }
+
+    // Takes the "up" direction in device coordinates (x right, y towards the
+    // top of the phone, z out of the screen) and maps it to screen coordinates.
+    function updateFromUp(ux, uy) {
+        if (demoMode) {
+            demoMode = false;
+            demoBox.hidden = true;
+            haveReading = false;
+        }
+        var t = screenAngle() * Math.PI / 180;
+        var x = ux * Math.cos(t) - uy * Math.sin(t);
+        var y = ux * Math.sin(t) + uy * Math.cos(t);
+        if (!haveReading) {
+            sx = x;
+            sy = y;
+            haveReading = true;
+        } else {
+            sx += (x - sx) * SMOOTHING;
+            sy += (y - sy) * SMOOTHING;
+        }
+    }
+
+    // Preferred: orientation angles (consistent across iOS and Android).
+    function onOrientation(e) {
+        if (e.beta === null || e.gamma === null) {
+            return;
+        }
+        var b = e.beta * Math.PI / 180;
+        var g = e.gamma * Math.PI / 180;
+        // Earth "up" expressed in device coordinates (W3C Z-X'-Y'' angles).
+        updateFromUp(-Math.sin(g) * Math.cos(b), Math.sin(b));
+        usingMotion = false;
+    }
+
+    // Fallback for browsers that only fire devicemotion.
+    var usingMotion = true;
+    function onMotion(e) {
+        if (!usingMotion || !e.accelerationIncludingGravity) {
+            return;
+        }
+        var a = e.accelerationIncludingGravity;
+        if (a.x === null || a.y === null) {
+            return;
+        }
+        var n = Math.sqrt(a.x * a.x + a.y * a.y + (a.z || 0) * (a.z || 0)) || 1;
+        updateFromUp(a.x / n, a.y / n);
+    }
+
+    function wrapDegrees(d) {
+        d = d % 360;
+        if (d > 180) { d -= 360; }
+        if (d <= -180) { d += 360; }
+        return d;
+    }
+
+    function formatDegrees(d) {
+        return (d < 0 && d.toFixed(1) !== "-0.0" ? "−" : "") + Math.abs(d).toFixed(1) + "°";
+    }
+
+    function render() {
+        if (haveReading) {
+            var tilt = Math.sqrt(sx * sx + sy * sy);
+            warn.hidden = tilt >= MIN_TILT;
+            angle = wrapDegrees(Math.atan2(sx, sy) * 180 / Math.PI - offset);
+            var isLevel = Math.abs(angle) < LEVEL_TOLERANCE;
+            plumb.style.transform = "rotate(" + angle.toFixed(2) + "deg)";
+            plumb.classList.toggle("level", isLevel);
+            // Show the phone's own tilt (clockwise positive), which is what
+            // the target angle is compared against.
+            var tilt = -angle;
+            var text = formatDegrees(tilt);
+            var isHit = false;
+            if (targetOn) {
+                var diff = wrapDegrees(angle + targetAngle);
+                isHit = Math.abs(diff) < LEVEL_TOLERANCE;
+                target.style.transform = "rotate(" + diff.toFixed(2) + "deg)";
+                text += " / " + formatDegrees(targetAngle);
+                if (isHit && !wasHit && navigator.vibrate) {
+                    navigator.vibrate(40);
+                }
+                wasHit = isHit;
+            }
+            target.classList.toggle("hit", isHit);
+            readout.classList.toggle("hit", isHit);
+            readout.classList.toggle("level", isLevel && !targetOn);
+            readout.textContent = text;
+        }
+        requestAnimationFrame(render);
+    }
+
+    var demoBox = document.getElementById("demoBox");
+    var demoMode = false;
+    document.getElementById("demo").addEventListener("input", function (e) {
+        // Simulated clockwise tilt of the phone, in degrees.
+        var r = -parseFloat(e.target.value) * Math.PI / 180;
+        sx = Math.sin(r);
+        sy = Math.cos(r);
+    });
+
+    function startSensors() {
+        window.addEventListener("deviceorientation", onOrientation);
+        window.addEventListener("devicemotion", onMotion);
+        setTimeout(function () {
+            if (!haveReading) {
+                demoBox.hidden = false;
+                sx = 0;
+                sy = 1;
+                haveReading = true;
+                demoMode = true;
+            }
+        }, 2000);
+    }
+
+    function requestSensorPermission() {
+        // iOS 13+ requires an explicit permission prompt from a user gesture.
+        var requests = [];
+        if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === "function") {
+            requests.push(DeviceOrientationEvent.requestPermission());
+        }
+        if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === "function") {
+            requests.push(DeviceMotionEvent.requestPermission());
+        }
+        return Promise.all(requests).catch(function () {
+            return [];
+        });
+    }
+
+    function startCamera() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            return Promise.reject(new Error("Camera not available (the page must be served over HTTPS)."));
+        }
+        return navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+                facingMode: {ideal: "environment"},
+                width: {ideal: 1920},
+                height: {ideal: 1080}
+            }
+        }).then(function (stream) {
+            video.srcObject = stream;
+            return video.play();
+        });
+    }
+
+    document.getElementById("go").addEventListener("click", function () {
+        errorText.hidden = true;
+        // Ask for sensors first: on iOS the gesture must still be "fresh".
+        requestSensorPermission().then(function () {
+            startSensors();
+            return startCamera();
+        }).then(function () {
+            startScreen.hidden = true;
+        }).catch(function (err) {
+            // Keep going without the camera; the level still works.
+            startScreen.hidden = true;
+            readout.textContent = "Camera: " + (err && err.message ? err.message : err);
+        });
+        requestAnimationFrame(render);
+    });
+
+    document.getElementById("zero").addEventListener("click", function () {
+        offset += angle;
+        try { localStorage.setItem("level-offset", String(offset)); } catch (ignore) {}
+        resetButton.hidden = false;
+    });
+
+    function setTargetOn(on) {
+        targetOn = on;
+        target.hidden = !on;
+        targetBox.hidden = !on;
+        angleToggle.classList.toggle("on", on);
+        wasHit = false;
+        try { localStorage.setItem("level-target-on", on ? "1" : "0"); } catch (ignore) {}
+    }
+
+    function setTargetAngle(value) {
+        if (isNaN(value)) {
+            return;
+        }
+        targetAngle = wrapDegrees(value);
+        wasHit = false;
+        try { localStorage.setItem("level-target", String(targetAngle)); } catch (ignore) {}
+    }
+
+    targetInput.value = String(targetAngle);
+    setTargetOn(targetOn);
+
+    angleToggle.addEventListener("click", function () {
+        setTargetOn(!targetOn);
+    });
+
+    targetInput.addEventListener("input", function () {
+        setTargetAngle(parseFloat(targetInput.value));
+    });
+
+    // Some mobile number keypads have no minus key.
+    document.getElementById("targetSign").addEventListener("click", function () {
+        setTargetAngle(-targetAngle);
+        targetInput.value = String(targetAngle);
+    });
+
+    targetInput.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+            targetInput.blur();
+        }
+    });
+
+    resetButton.addEventListener("click", function () {
+        offset = 0;
+        try { localStorage.removeItem("level-offset"); } catch (ignore) {}
+        resetButton.hidden = true;
+    });
+
+    document.getElementById("full").addEventListener("click", function () {
+        var el = document.documentElement;
+        if (document.fullscreenElement || document.webkitFullscreenElement) {
+            (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+            return;
+        }
+        var req = el.requestFullscreen || el.webkitRequestFullscreen;
+        if (req) {
+            Promise.resolve(req.call(el)).then(function () {
+                if (screen.orientation && screen.orientation.lock) {
+                    return screen.orientation.lock("landscape");
+                }
+            }).catch(function () {});
+        }
+    });
+
+    // Save the current camera frame with the plumb line drawn on it.
+    document.getElementById("snap").addEventListener("click", function () {
+        var w = video.videoWidth;
+        var h = video.videoHeight;
+        if (!w || !h) {
+            return;
+        }
+        var canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        var ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, w, h);
+        var len = Math.sqrt(w * w + h * h);
+        function drawLine(deg, color) {
+            var rad = deg * Math.PI / 180;
+            var dx = Math.sin(rad) * len;
+            var dy = -Math.cos(rad) * len;
+            ctx.strokeStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(w / 2 - dx, h / 2 - dy);
+            ctx.lineTo(w / 2 + dx, h / 2 + dy);
+            ctx.stroke();
+        }
+        ctx.lineWidth = Math.max(3, Math.round(w / 400));
+        drawLine(angle, Math.abs(angle) < LEVEL_TOLERANCE ? "#34c759" : "#ff3b30");
+        if (targetOn) {
+            var diff = wrapDegrees(angle + targetAngle);
+            drawLine(diff, Math.abs(diff) < LEVEL_TOLERANCE ? "#34c759" : "#ffcc00");
+        }
+        ctx.font = Math.round(h / 20) + "px sans-serif";
+        ctx.fillStyle = "#fff";
+        ctx.fillText(readout.textContent, h / 40, h / 15);
+        canvas.toBlob(function (blob) {
+            var a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = "level-" + Date.now() + ".jpg";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+        }, "image/jpeg", 0.92);
+    });
+}());
+</script>
+</body>
+</html>
